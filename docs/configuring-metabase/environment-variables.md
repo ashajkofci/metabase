@@ -2102,6 +2102,15 @@ Default: `null`
 
 Used during development of third-party drivers. Set the value to have that plugin manifest get loaded during startup. Specify multiple plugin manifests by comma-separating them.
 
+### `MB_DEV_LICENSE_TYPE`
+
+Type: string<br>
+Default: `null`
+
+Used during development and testing to override the license plan type. This allows testing different license scenarios without requiring actual license tokens. Valid values include: `pro-cloud`, `pro-self-hosted`, `starter`, etc. This takes precedence over the actual token's plan-alias.
+
+**Note:** This is for development/testing purposes only and should not be used in production environments.
+
 ### `MB_DISABLE_SCHEDULER`
 
 Type: boolean<br>

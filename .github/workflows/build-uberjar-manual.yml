@@ -1,0 +1,343 @@
+name: Build Uberjar - Manual
+
+# This workflow allows building uberjars on-demand for any commit, branch, or tag
+# Supports both OSS and EE editions, and allows specifying custom versions
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Git ref (branch, tag, or commit SHA) to build from'
+        required: true
+        default: 'master'
+        type: string
+      edition:
+        description: 'Edition to build'
+        required: true
+        type: choice
+        options:
+          - 'oss'
+          - 'ee'
+          - 'both'
+        default: 'both'
+      build-type:
+        description: 'Type of build'
+        required: true
+        type: choice
+        options:
+          - 'development'
+          - 'testing'
+          - 'release-candidate'
+          - 'custom'
+        default: 'development'
+      custom-version:
+        description: 'Custom version string (optional, e.g., v1.50.0-rc1)'
+        required: false
+        type: string
+      java-version:
+        description: 'Java version to use for build'
+        required: false
+        type: choice
+        options:
+          - '21'
+          - '17'
+          - '11'
+        default: '21'
+      node-version:
+        description: 'Node.js version to use for build'
+        required: false
+        type: choice
+        options:
+          - '22'
+          - '20'
+          - '18'
+        default: '22'
+      skip-tests:
+        description: 'Skip health checks after build'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  prepare-build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      commit-sha: ${{ steps.get-commit.outputs.sha }}
+      build-oss: ${{ steps.determine-editions.outputs.build-oss }}
+      build-ee: ${{ steps.determine-editions.outputs.build-ee }}
+      version-string: ${{ steps.determine-version.outputs.version }}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Get commit SHA
+        id: get-commit
+        run: |
+          COMMIT_SHA=$(git rev-parse HEAD)
+          echo "sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "Building from commit: $COMMIT_SHA"
+
+      - name: Determine which editions to build
+        id: determine-editions
+        run: |
+          if [ "${{ inputs.edition }}" = "both" ]; then
+            echo "build-oss=true" >> $GITHUB_OUTPUT
+            echo "build-ee=true" >> $GITHUB_OUTPUT
+          elif [ "${{ inputs.edition }}" = "oss" ]; then
+            echo "build-oss=true" >> $GITHUB_OUTPUT
+            echo "build-ee=false" >> $GITHUB_OUTPUT
+          else
+            echo "build-oss=false" >> $GITHUB_OUTPUT
+            echo "build-ee=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Determine version string
+        id: determine-version
+        run: |
+          if [ -n "${{ inputs.custom-version }}" ]; then
+            VERSION="${{ inputs.custom-version }}"
+          else
+            # Generate version based on build type
+            TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+            COMMIT_SHORT=$(git rev-parse --short HEAD)
+            case "${{ inputs.build-type }}" in
+              development)
+                VERSION="dev-${TIMESTAMP}-${COMMIT_SHORT}"
+                ;;
+              testing)
+                VERSION="test-${TIMESTAMP}-${COMMIT_SHORT}"
+                ;;
+              release-candidate)
+                VERSION="rc-${TIMESTAMP}-${COMMIT_SHORT}"
+                ;;
+              custom)
+                VERSION="custom-${TIMESTAMP}-${COMMIT_SHORT}"
+                ;;
+            esac
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+  build-oss:
+    needs: prepare-build
+    if: needs.prepare-build.outputs.build-oss == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      MB_EDITION: oss
+      INTERACTIVE: false
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-build.outputs.commit-sha }}
+
+      - name: Prepare front-end environment
+        uses: ./.github/actions/prepare-frontend
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Prepare back-end environment
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: ${{ inputs.java-version }}
+
+      - name: Build OSS Uberjar
+        run: |
+          if [ -n "${{ inputs.custom-version }}" ]; then
+            ./bin/build.sh :edition :oss :version "${{ needs.prepare-build.outputs.version-string }}"
+          else
+            ./bin/build.sh :edition :oss
+          fi
+
+      - name: Prepare uberjar artifact
+        uses: ./.github/actions/prepare-uberjar-artifact
+        with:
+          name: metabase-oss-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-uberjar
+
+      - name: Store build metadata
+        run: |
+          mkdir -p build-metadata
+          echo "${{ needs.prepare-build.outputs.commit-sha }}" > build-metadata/COMMIT-SHA
+          echo "${{ inputs.ref }}" > build-metadata/GIT-REF
+          echo "${{ inputs.build-type }}" > build-metadata/BUILD-TYPE
+          echo "${{ needs.prepare-build.outputs.version-string }}" > build-metadata/VERSION
+          echo "oss" > build-metadata/EDITION
+          date -u > build-metadata/BUILD-TIMESTAMP
+
+      - name: Upload build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: metabase-oss-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-metadata
+          path: build-metadata/
+
+  build-ee:
+    needs: prepare-build
+    if: needs.prepare-build.outputs.build-ee == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    env:
+      MB_EDITION: ee
+      INTERACTIVE: false
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare-build.outputs.commit-sha }}
+
+      - name: Prepare front-end environment
+        uses: ./.github/actions/prepare-frontend
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Prepare back-end environment
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: ${{ inputs.java-version }}
+
+      - name: Build EE Uberjar
+        run: |
+          if [ -n "${{ inputs.custom-version }}" ]; then
+            ./bin/build.sh :edition :ee :version "${{ needs.prepare-build.outputs.version-string }}"
+          else
+            ./bin/build.sh :edition :ee
+          fi
+
+      - name: Prepare uberjar artifact
+        uses: ./.github/actions/prepare-uberjar-artifact
+        with:
+          name: metabase-ee-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-uberjar
+
+      - name: Store build metadata
+        run: |
+          mkdir -p build-metadata
+          echo "${{ needs.prepare-build.outputs.commit-sha }}" > build-metadata/COMMIT-SHA
+          echo "${{ inputs.ref }}" > build-metadata/GIT-REF
+          echo "${{ inputs.build-type }}" > build-metadata/BUILD-TYPE
+          echo "${{ needs.prepare-build.outputs.version-string }}" > build-metadata/VERSION
+          echo "ee" > build-metadata/EDITION
+          date -u > build-metadata/BUILD-TIMESTAMP
+
+      - name: Upload build metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: metabase-ee-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-metadata
+          path: build-metadata/
+
+  health-check-oss:
+    runs-on: ubuntu-22.04
+    needs: [prepare-build, build-oss]
+    if: |
+      !cancelled() &&
+      needs.prepare-build.outputs.build-oss == 'true' &&
+      needs.build-oss.result == 'success' &&
+      inputs.skip-tests == false
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Prepare JRE (Java Run-time Environment)
+        uses: actions/setup-java@v4
+        with:
+          java-package: jre
+          java-version: ${{ inputs.java-version }}
+          distribution: "temurin"
+
+      - name: Retrieve uberjar artifact
+        uses: ./.github/actions/fetch-artifact
+        with:
+          name: metabase-oss-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-uberjar
+
+      - name: Launch uberjar
+        run: java --add-opens java.base/java.nio=ALL-UNNAMED -jar ./metabase.jar &
+
+      - name: Wait for Metabase to start
+        run: |
+          echo "Waiting for Metabase to start..."
+          timeout 300 bash -c 'while ! curl -s http://localhost:3000/api/health | grep -q "{\"status\":\"ok\"}"; do sleep 2; done' || {
+            echo "Metabase failed to start within 5 minutes"
+            exit 1
+          }
+          echo "Metabase OSS started successfully!"
+
+  health-check-ee:
+    runs-on: ubuntu-22.04
+    needs: [prepare-build, build-ee]
+    if: |
+      !cancelled() &&
+      needs.prepare-build.outputs.build-ee == 'true' &&
+      needs.build-ee.result == 'success' &&
+      inputs.skip-tests == false
+    timeout-minutes: 10
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Prepare JRE (Java Run-time Environment)
+        uses: actions/setup-java@v4
+        with:
+          java-package: jre
+          java-version: ${{ inputs.java-version }}
+          distribution: "temurin"
+
+      - name: Retrieve uberjar artifact
+        uses: ./.github/actions/fetch-artifact
+        with:
+          name: metabase-ee-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-uberjar
+
+      - name: Launch uberjar
+        run: java --add-opens java.base/java.nio=ALL-UNNAMED -jar ./metabase.jar &
+
+      - name: Wait for Metabase to start
+        run: |
+          echo "Waiting for Metabase to start..."
+          timeout 300 bash -c 'while ! curl -s http://localhost:3000/api/health | grep -q "{\"status\":\"ok\"}"; do sleep 2; done' || {
+            echo "Metabase failed to start within 5 minutes"
+            exit 1
+          }
+          echo "Metabase EE started successfully!"
+
+  summary:
+    runs-on: ubuntu-22.04
+    needs: [prepare-build, build-oss, build-ee, health-check-oss, health-check-ee]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Build Summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Build Type:** ${{ inputs.build-type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Git Ref:** ${{ inputs.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit SHA:** ${{ needs.prepare-build.outputs.commit-sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.prepare-build.outputs.version-string }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Results" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.prepare-build.outputs.build-oss }}" = "true" ]; then
+            echo "- **OSS Build:** ${{ needs.build-oss.result }}" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ inputs.skip-tests }}" = "false" ]; then
+              echo "- **OSS Health Check:** ${{ needs.health-check-oss.result }}" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+          if [ "${{ needs.prepare-build.outputs.build-ee }}" = "true" ]; then
+            echo "- **EE Build:** ${{ needs.build-ee.result }}" >> $GITHUB_STEP_SUMMARY
+            if [ "${{ inputs.skip-tests }}" = "false" ]; then
+              echo "- **EE Health Check:** ${{ needs.health-check-ee.result }}" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.prepare-build.outputs.build-oss }}" = "true" ]; then
+            echo "- \`metabase-oss-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-uberjar\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ "${{ needs.prepare-build.outputs.build-ee }}" = "true" ]; then
+            echo "- \`metabase-ee-${{ inputs.build-type }}-${{ needs.prepare-build.outputs.commit-sha }}-uberjar\`" >> $GITHUB_STEP_SUMMARY
+          fi

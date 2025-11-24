@@ -255,3 +255,29 @@
     (is (not (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str (repeat 65 "a")))))
     (is (not (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str (repeat 63 "a")))))
     (is (not (mr/validate [:re @#'token-check/RemoteCheckedToken] (apply str "mb_dev_" (repeat 53 "a")))))))
+
+(deftest dev-license-type-override-test
+  (testing "MB_DEV_LICENSE_TYPE environment variable overrides plan-alias"
+    (mt/with-temp-env-var-value! [mb-dev-license-type "pro-cloud"]
+      (testing "plan-alias returns the dev license type"
+        (is (= "pro-cloud" (token-check/plan-alias))))
+      
+      (testing "token-status includes the overridden plan-alias"
+        (let [status (token-check/-token-status)]
+          (is (= "pro-cloud" (:plan-alias status))))))
+    
+    (mt/with-temp-env-var-value! [mb-dev-license-type "starter"]
+      (testing "plan-alias can be set to starter"
+        (is (= "starter" (token-check/plan-alias)))))
+    
+    (mt/with-temp-env-var-value! [mb-dev-license-type "pro-self-hosted"]
+      (testing "plan-alias can be set to pro-self-hosted"
+        (is (= "pro-self-hosted" (token-check/plan-alias))))))
+  
+  (testing "When MB_DEV_LICENSE_TYPE is not set, uses actual token plan-alias"
+    (mt/with-temp-env-var-value! [mb-dev-license-type nil]
+      (testing "plan-alias falls back to token's plan-alias"
+        ;; Without a valid token, this should be nil
+        (mt/with-temporary-setting-values [premium-embedding-token nil]
+          (is (nil? (token-check/plan-alias))))))))
+
