@@ -1,0 +1,299 @@
+name: Build Uberjar - Release Types
+
+# This workflow builds uberjars for different release types
+# Triggered by tags or manual dispatch for RC, patch, and hotfix releases
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'           # Release tags (e.g., v1.50.0)
+      - 'v*.*.*-rc*'       # Release candidate tags (e.g., v1.50.0-rc1)
+      - 'v*.*.*-beta*'     # Beta release tags (e.g., v1.50.0-beta1)
+      - 'v*.*.*-alpha*'    # Alpha release tags (e.g., v1.50.0-alpha1)
+      - 'v*.*.*-hotfix*'   # Hotfix tags (e.g., v1.49.1-hotfix1)
+
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.50.0, v1.50.0-rc1)'
+        required: true
+        type: string
+      release-type:
+        description: 'Type of release'
+        required: true
+        type: choice
+        options:
+          - 'stable'
+          - 'release-candidate'
+          - 'beta'
+          - 'alpha'
+          - 'hotfix'
+          - 'patch'
+        default: 'stable'
+      create-tag:
+        description: 'Create git tag if it does not exist'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  determine-release-type:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.parse-version.outputs.version }}
+      release-type: ${{ steps.parse-version.outputs.release-type }}
+      is-prerelease: ${{ steps.parse-version.outputs.is-prerelease }}
+      commit-sha: ${{ steps.get-commit.outputs.sha }}
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get commit SHA
+        id: get-commit
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            COMMIT_SHA="${{ github.sha }}"
+          else
+            # For workflow_dispatch, get the current HEAD
+            COMMIT_SHA=$(git rev-parse HEAD)
+          fi
+          echo "sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "Commit SHA: $COMMIT_SHA"
+
+      - name: Parse version and determine release type
+        id: parse-version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Triggered by tag push
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            # Triggered by workflow_dispatch
+            VERSION="${{ inputs.version }}"
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Determine release type from version string
+          if [[ "$VERSION" =~ -rc[0-9]+ ]]; then
+            RELEASE_TYPE="release-candidate"
+            IS_PRERELEASE="true"
+          elif [[ "$VERSION" =~ -beta[0-9]+ ]]; then
+            RELEASE_TYPE="beta"
+            IS_PRERELEASE="true"
+          elif [[ "$VERSION" =~ -alpha[0-9]+ ]]; then
+            RELEASE_TYPE="alpha"
+            IS_PRERELEASE="true"
+          elif [[ "$VERSION" =~ -hotfix[0-9]+ ]]; then
+            RELEASE_TYPE="hotfix"
+            IS_PRERELEASE="false"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RELEASE_TYPE="${{ inputs.release-type }}"
+            if [ "$RELEASE_TYPE" = "stable" ] || [ "$RELEASE_TYPE" = "hotfix" ] || [ "$RELEASE_TYPE" = "patch" ]; then
+              IS_PRERELEASE="false"
+            else
+              IS_PRERELEASE="true"
+            fi
+          else
+            RELEASE_TYPE="stable"
+            IS_PRERELEASE="false"
+          fi
+
+          echo "release-type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
+          echo "is-prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+
+          echo "Version: $VERSION"
+          echo "Release Type: $RELEASE_TYPE"
+          echo "Is Pre-release: $IS_PRERELEASE"
+
+      - name: Create tag if requested
+        if: |
+          github.event_name == 'workflow_dispatch' &&
+          inputs.create-tag == true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "${{ steps.parse-version.outputs.version }}" >/dev/null 2>&1; then
+            echo "Tag ${{ steps.parse-version.outputs.version }} already exists"
+          else
+            git tag -a "${{ steps.parse-version.outputs.version }}" -m "Release ${{ steps.parse-version.outputs.version }}"
+            git push origin "${{ steps.parse-version.outputs.version }}"
+            echo "Created and pushed tag ${{ steps.parse-version.outputs.version }}"
+          fi
+
+  build-release-uberjar:
+    needs: determine-release-type
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    strategy:
+      matrix:
+        edition: [oss, ee]
+    env:
+      MB_EDITION: ${{ matrix.edition }}
+      INTERACTIVE: false
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.determine-release-type.outputs.commit-sha }}
+
+      - name: Prepare front-end environment
+        uses: ./.github/actions/prepare-frontend
+        with:
+          node-version: '22'
+
+      - name: Prepare back-end environment
+        uses: ./.github/actions/prepare-backend
+        with:
+          java-version: '21'
+
+      - name: Build Metabase Uberjar
+        run: |
+          ./bin/build.sh :edition :${{ matrix.edition }} :version ${{ needs.determine-release-type.outputs.version }}
+
+      - name: Store build metadata
+        run: |
+          mkdir -p release-metadata
+          echo "${{ needs.determine-release-type.outputs.commit-sha }}" > release-metadata/COMMIT-SHA
+          echo "${{ needs.determine-release-type.outputs.version }}" > release-metadata/VERSION
+          echo "${{ needs.determine-release-type.outputs.release-type }}" > release-metadata/RELEASE-TYPE
+          echo "${{ matrix.edition }}" > release-metadata/EDITION
+          echo "${{ needs.determine-release-type.outputs.is-prerelease }}" > release-metadata/IS-PRERELEASE
+          date -u > release-metadata/BUILD-TIMESTAMP
+
+      - name: Move and rename uberjar
+        run: |
+          mv ./target/uberjar/metabase.jar ./metabase-${{ matrix.edition }}-${{ needs.determine-release-type.outputs.version }}.jar
+
+      - name: Calculate checksums
+        run: |
+          sha256sum ./metabase-${{ matrix.edition }}-${{ needs.determine-release-type.outputs.version }}.jar > SHA256.sum
+          md5sum ./metabase-${{ matrix.edition }}-${{ needs.determine-release-type.outputs.version }}.jar > MD5.sum
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: metabase-${{ matrix.edition }}-${{ needs.determine-release-type.outputs.version }}-release
+          path: |
+            ./metabase-${{ matrix.edition }}-${{ needs.determine-release-type.outputs.version }}.jar
+            ./SHA256.sum
+            ./MD5.sum
+            ./release-metadata/
+
+  verify-release-jars:
+    runs-on: ubuntu-22.04
+    needs: [determine-release-type, build-release-uberjar]
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        edition: [oss, ee]
+        java-version: [21]
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v4
+
+      - name: Prepare JRE
+        uses: actions/setup-java@v4
+        with:
+          java-package: jre
+          java-version: ${{ matrix.java-version }}
+          distribution: "temurin"
+
+      - name: Download release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: metabase-${{ matrix.edition }}-${{ needs.determine-release-type.outputs.version }}-release
+
+      - name: Verify checksum
+        run: |
+          sha256sum -c SHA256.sum
+          md5sum -c MD5.sum
+          echo "Checksums verified successfully!"
+
+      - name: Launch and verify uberjar
+        run: |
+          java --add-opens java.base/java.nio=ALL-UNNAMED \
+            -jar ./metabase-${{ matrix.edition }}-${{ needs.determine-release-type.outputs.version }}.jar &
+
+          echo "Waiting for Metabase to start..."
+          timeout 300 bash -c 'while ! curl -s http://localhost:3000/api/health | grep -q "{\"status\":\"ok\"}"; do sleep 2; done' || {
+            echo "Metabase failed to start"
+            exit 1
+          }
+          echo "Metabase ${{ matrix.edition }} ${{ needs.determine-release-type.outputs.version }} verified successfully!"
+
+  create-github-release:
+    runs-on: ubuntu-22.04
+    needs: [determine-release-type, build-release-uberjar, verify-release-jars]
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.create-tag == true)
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.determine-release-type.outputs.version }}
+          name: Metabase ${{ needs.determine-release-type.outputs.version }}
+          draft: true
+          prerelease: ${{ needs.determine-release-type.outputs.is-prerelease }}
+          body: |
+            ## Metabase ${{ needs.determine-release-type.outputs.version }}
+
+            **Release Type:** ${{ needs.determine-release-type.outputs.release-type }}
+            **Commit:** ${{ needs.determine-release-type.outputs.commit-sha }}
+
+            ### Downloads
+
+            - **Open Source Edition:** `metabase-oss-${{ needs.determine-release-type.outputs.version }}.jar`
+            - **Enterprise Edition:** `metabase-ee-${{ needs.determine-release-type.outputs.version }}.jar`
+
+            ### Verification
+
+            Checksums are provided for verification:
+            - SHA256 checksums in `SHA256.sum`
+            - MD5 checksums in `MD5.sum`
+
+            ---
+
+            *This is an automated release. Please update the release notes before publishing.*
+          files: |
+            ./artifacts/metabase-oss-${{ needs.determine-release-type.outputs.version }}-release/metabase-oss-${{ needs.determine-release-type.outputs.version }}.jar
+            ./artifacts/metabase-oss-${{ needs.determine-release-type.outputs.version }}-release/SHA256.sum
+            ./artifacts/metabase-oss-${{ needs.determine-release-type.outputs.version }}-release/MD5.sum
+            ./artifacts/metabase-ee-${{ needs.determine-release-type.outputs.version }}-release/metabase-ee-${{ needs.determine-release-type.outputs.version }}.jar
+            ./artifacts/metabase-ee-${{ needs.determine-release-type.outputs.version }}-release/SHA256.sum
+            ./artifacts/metabase-ee-${{ needs.determine-release-type.outputs.version }}-release/MD5.sum
+
+  summary:
+    runs-on: ubuntu-22.04
+    needs: [determine-release-type, build-release-uberjar, verify-release-jars, create-github-release]
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Release Summary
+        run: |
+          echo "## Release Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.determine-release-type.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Release Type:** ${{ needs.determine-release-type.outputs.release-type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Pre-release:** ${{ needs.determine-release-type.outputs.is-prerelease }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit SHA:** ${{ needs.determine-release-type.outputs.commit-sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Status" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build:** ${{ needs.build-release-uberjar.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Verification:** ${{ needs.verify-release-jars.result }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ needs.create-github-release.result }}" != "skipped" ]; then
+            echo "- **GitHub Release:** ${{ needs.create-github-release.result }}" >> $GITHUB_STEP_SUMMARY
+          fi
