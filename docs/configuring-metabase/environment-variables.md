@@ -2107,7 +2107,7 @@ Used during development of third-party drivers. Set the value to have that plugi
 Type: string<br>
 Default: `null`
 
-Used during development and testing to override the license plan type. This allows testing different license scenarios without requiring actual license tokens. Valid values include: `pro-cloud`, `pro-self-hosted`, `starter`, etc. This takes precedence over the actual token's plan-alias.
+Used during development and testing to override the license plan type and activate the corresponding premium features. This allows testing different license scenarios without requiring actual license tokens. Valid values include: `pro-cloud`, `pro-self-hosted`, `starter`, etc. When set, this activates the features associated with that plan type and overrides the actual token's plan-alias.
 
 **Note:** This is for development/testing purposes only and should not be used in production environments.
 

@@ -134,7 +134,25 @@ java -jar metabase.jar
 Each premium feature is controlled by a feature flag. Features are defined in:
 - `src/metabase/premium_features/settings.clj`
 
-The features are determined by the token validation response. When using `MB_DEV_LICENSE_TYPE`, you're only overriding the plan-alias, not the individual feature flags. For complete feature testing, you may need an actual token.
+When using `MB_DEV_LICENSE_TYPE`, the appropriate features for that plan type are automatically activated, allowing you to test premium functionality without needing an actual license token.
+
+### Features by Plan Type
+
+**Starter Plan:**
+- Advanced permissions, audit app, sandboxes, SSO (JWT/SAML)
+- Content verification, dashboard subscription filters
+- Email controls, official collections, snippet collections
+- And more...
+
+**Pro Plans (pro-cloud, pro-self-hosted):**
+- All Starter features, plus:
+- Whitelabel embedding, SCIM provisioning
+- Cache controls, serialization, upload management
+- Database routing, session timeout config
+- Additional SSO options (Google, LDAP)
+- And more...
+
+The complete feature mappings are defined in `src/metabase/premium_features/token_check.clj`.
 
 ## Implementation Details
 
@@ -143,22 +161,23 @@ The features are determined by the token validation response. When using `MB_DEV
 1. **Token Setting**: Token is set via `MB_PREMIUM_EMBEDDING_TOKEN` environment variable
 2. **Token Validation**: Token is validated against the Metabase store (or locally for airgap)
 3. **Plan Determination**: `plan-alias` field from validation response determines the tier
-4. **Override**: `MB_DEV_LICENSE_TYPE` can override the plan-alias for testing
+4. **Override**: `MB_DEV_LICENSE_TYPE` overrides both plan-alias and features for testing
 5. **Feature Checks**: Code uses `has-feature?` to check if specific features are enabled
 
 ### Key Functions
 
 - `plan-alias` - Returns the current plan (checks MB_DEV_LICENSE_TYPE first)
 - `has-feature?` - Checks if a specific feature is enabled
+- `*token-features*` - Returns the set of enabled features (from token or MB_DEV_LICENSE_TYPE)
 - `completed-activation-signals?` - Determines if activation thresholds are met
 
 ## Important Notes
 
 ⚠️ **Development Only**: The `MB_DEV_LICENSE_TYPE` override is intended for development and testing only. Do not use in production.
 
-⚠️ **Limited Scope**: Setting `MB_DEV_LICENSE_TYPE` only overrides the plan-alias. It doesn't grant access to premium features without a valid token. You'll still need a real token for most premium functionality.
+✅ **Full Feature Testing**: Setting `MB_DEV_LICENSE_TYPE` now activates the appropriate features for that plan type, allowing you to test premium functionality without a real token.
 
-⚠️ **Testing Real Features**: To test actual premium features (not just plan detection), you'll need a valid license token from the Metabase store.
+ℹ️ **Unknown Plans**: If you set `MB_DEV_LICENSE_TYPE` to an unrecognized plan name, no features will be activated.
 
 ## Related Documentation
 
