@@ -438,6 +438,89 @@
   []
   (mr/validate AirgapToken (premium-features.settings/premium-embedding-token)))
 
+(def ^:private plan-features
+  "Map of plan types to their associated feature sets.
+   Used when MB_DEV_LICENSE_TYPE is set to enable features for development/testing."
+  {"starter"          #{"advanced-permissions"
+                        "audit-app"
+                        "cache-granular-controls"
+                        "content-verification"
+                        "dashboard-subscription-filters"
+                        "email-allow-list"
+                        "email-restrict-recipients"
+                        "embedding"
+                        "official-collections"
+                        "sandboxes"
+                        "snippet-collections"
+                        "sso-jwt"
+                        "sso-saml"}
+   "pro-cloud"        #{"advanced-permissions"
+                        "audit-app"
+                        "cache-granular-controls"
+                        "cache-preemptive"
+                        "collection-cleanup"
+                        "config-text-file"
+                        "content-translation"
+                        "content-verification"
+                        "dashboard-subscription-filters"
+                        "database-auth-providers"
+                        "database-routing"
+                        "disable-password-login"
+                        "email-allow-list"
+                        "email-restrict-recipients"
+                        "embedding"
+                        "embedding-sdk"
+                        "hosting"
+                        "llm-autodescription"
+                        "official-collections"
+                        "query-reference-validation"
+                        "sandboxes"
+                        "scim"
+                        "serialization"
+                        "session-timeout-config"
+                        "snippet-collections"
+                        "sso-google"
+                        "sso-jwt"
+                        "sso-ldap"
+                        "sso-saml"
+                        "upload-management"
+                        "whitelabel"}
+   "pro-self-hosted"  #{"advanced-permissions"
+                        "audit-app"
+                        "cache-granular-controls"
+                        "cache-preemptive"
+                        "collection-cleanup"
+                        "config-text-file"
+                        "content-translation"
+                        "content-verification"
+                        "dashboard-subscription-filters"
+                        "database-auth-providers"
+                        "database-routing"
+                        "disable-password-login"
+                        "email-allow-list"
+                        "email-restrict-recipients"
+                        "embedding"
+                        "embedding-sdk"
+                        "llm-autodescription"
+                        "official-collections"
+                        "query-reference-validation"
+                        "sandboxes"
+                        "scim"
+                        "serialization"
+                        "session-timeout-config"
+                        "snippet-collections"
+                        "sso-google"
+                        "sso-jwt"
+                        "sso-ldap"
+                        "sso-saml"
+                        "upload-management"
+                        "whitelabel"}})
+
+(defn- features-for-dev-license-type
+  "Returns the feature set for a given dev license type, or nil if not a recognized type."
+  [license-type]
+  (get plan-features license-type))
+
 (let [cached-logger (memoize/ttl
                      ^{::memoize/args-fn (fn [[token _e]] [token])}
                      (fn [_token e]
@@ -446,29 +529,35 @@
                      ;; log every five minutes
                      :ttl/threshold (* 1000 60 5))]
   (mu/defn ^:dynamic *token-features* :- [:set ms/NonBlankString]
-    "Get the features associated with the system's premium features token."
+    "Get the features associated with the system's premium features token.
+     
+     If MB_DEV_LICENSE_TYPE environment variable is set, returns the features for that plan type."
     []
-    (try
-      (or (some-> (premium-features.settings/premium-embedding-token)
-                  (check-token)
-                  :features set)
-          #{})
-      (catch Throwable e
-        (when (:pass-thru (ex-data e))
-          (throw e))
-        (cached-logger (premium-features.settings/premium-embedding-token) e)
-        #{}))))
+    (if-let [dev-license-type (env :mb-dev-license-type)]
+      (or (features-for-dev-license-type dev-license-type) #{})
+      (try
+        (or (some-> (premium-features.settings/premium-embedding-token)
+                    (check-token)
+                    :features set)
+            #{})
+        (catch Throwable e
+          (when (:pass-thru (ex-data e))
+            (throw e))
+          (cached-logger (premium-features.settings/premium-embedding-token) e)
+          #{})))))
 
 (defn -token-status
   "Getter for the [[metabase.premium-features.settings/token-status]] setting.
   
-  If MB_DEV_LICENSE_TYPE environment variable is set, it will override the plan-alias in the response."
+  If MB_DEV_LICENSE_TYPE environment variable is set, it will override the plan-alias and features in the response."
   []
   (let [status (some-> (premium-features.settings/premium-embedding-token)
                        (check-token))
         dev-license-type (env :mb-dev-license-type)]
     (if dev-license-type
-      (assoc status :plan-alias dev-license-type)
+      (let [features (features-for-dev-license-type dev-license-type)]
+        (cond-> (assoc status :plan-alias dev-license-type)
+          features (assoc :features (vec features))))
       status)))
 
 (mu/defn plan-alias :- [:maybe :string]

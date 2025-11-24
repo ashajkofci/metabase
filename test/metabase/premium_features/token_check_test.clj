@@ -264,20 +264,62 @@
       
       (testing "token-status includes the overridden plan-alias"
         (let [status (token-check/-token-status)]
-          (is (= "pro-cloud" (:plan-alias status))))))
+          (is (= "pro-cloud" (:plan-alias status)))))
+      
+      (testing "features are activated for the dev license type"
+        (is (token-check/has-feature? :sandboxes))
+        (is (token-check/has-feature? :audit-app))
+        (is (token-check/has-feature? :sso-saml))
+        (is (token-check/has-feature? :whitelabel))
+        (is (token-check/has-any-features?)))
+      
+      (testing "token-status includes the features for the plan"
+        (let [status (token-check/-token-status)
+              features (set (:features status))]
+          (is (contains? features "sandboxes"))
+          (is (contains? features "audit-app"))
+          (is (contains? features "sso-saml")))))
     
     (mt/with-temp-env-var-value! [mb-dev-license-type "starter"]
       (testing "plan-alias can be set to starter"
-        (is (= "starter" (token-check/plan-alias)))))
+        (is (= "starter" (token-check/plan-alias))))
+      
+      (testing "starter features are activated"
+        (is (token-check/has-feature? :sandboxes))
+        (is (token-check/has-feature? :audit-app))
+        (is (token-check/has-feature? :sso-saml))
+        (is (token-check/has-any-features?)))
+      
+      (testing "but not all pro features are available"
+        (is (not (token-check/has-feature? :whitelabel)))
+        (is (not (token-check/has-feature? :scim)))))
     
     (mt/with-temp-env-var-value! [mb-dev-license-type "pro-self-hosted"]
       (testing "plan-alias can be set to pro-self-hosted"
-        (is (= "pro-self-hosted" (token-check/plan-alias))))))
+        (is (= "pro-self-hosted" (token-check/plan-alias))))
+      
+      (testing "pro-self-hosted features are activated"
+        (is (token-check/has-feature? :sandboxes))
+        (is (token-check/has-feature? :audit-app))
+        (is (token-check/has-feature? :sso-saml))
+        (is (token-check/has-feature? :whitelabel))
+        (is (token-check/has-any-features?)))
+      
+      (testing "but cloud-specific features are not available"
+        (is (not (token-check/has-feature? :hosting))))))
   
   (testing "When MB_DEV_LICENSE_TYPE is not set, uses actual token plan-alias"
     (mt/with-temp-env-var-value! [mb-dev-license-type nil]
       (testing "plan-alias falls back to token's plan-alias"
         ;; Without a valid token, this should be nil
         (mt/with-temporary-setting-values [premium-embedding-token nil]
-          (is (nil? (token-check/plan-alias))))))))
+          (is (nil? (token-check/plan-alias)))))))
+  
+  (testing "When MB_DEV_LICENSE_TYPE is set to unknown plan type"
+    (mt/with-temp-env-var-value! [mb-dev-license-type "unknown-plan"]
+      (testing "plan-alias returns the unknown type"
+        (is (= "unknown-plan" (token-check/plan-alias))))
+      
+      (testing "no features are activated for unknown plans"
+        (is (not (token-check/has-any-features?)))))))
 
