@@ -275,8 +275,7 @@ create-tag: true
 ```
 
 ### Example 4: Hotfix Build
-```
-bash:
+```bash
 git checkout hotfix/critical-fix
 git tag -a v1.49.3-hotfix1 -m "Critical security fix"
 git push origin v1.49.3-hotfix1
