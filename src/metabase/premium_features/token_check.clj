@@ -460,17 +460,27 @@
         #{}))))
 
 (defn -token-status
-  "Getter for the [[metabase.premium-features.settings/token-status]] setting."
+  "Getter for the [[metabase.premium-features.settings/token-status]] setting.
+  
+  If MB_DEV_LICENSE_TYPE environment variable is set, it will override the plan-alias in the response."
   []
-  (some-> (premium-features.settings/premium-embedding-token)
-          (check-token)))
+  (let [status (some-> (premium-features.settings/premium-embedding-token)
+                       (check-token))
+        dev-license-type (env :mb-dev-license-type)]
+    (if dev-license-type
+      (assoc status :plan-alias dev-license-type)
+      status)))
 
 (mu/defn plan-alias :- [:maybe :string]
-  "Returns a string representing the instance's current plan, if included in the last token status request."
+  "Returns a string representing the instance's current plan, if included in the last token status request.
+  
+  For development/testing purposes, this can be overridden using the MB_DEV_LICENSE_TYPE environment variable.
+  Valid values include: 'pro-cloud', 'pro-self-hosted', 'starter', etc."
   []
-  (some-> (premium-features.settings/premium-embedding-token)
-          (check-token)
-          :plan-alias))
+  (or (env :mb-dev-license-type)
+      (some-> (premium-features.settings/premium-embedding-token)
+              (check-token)
+              :plan-alias)))
 
 (mu/defn quotas :- [:maybe [:sequential [:map]]]
   "Returns a vector of maps for each quota of the subscription."

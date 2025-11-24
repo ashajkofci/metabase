@@ -551,7 +551,14 @@
 
 (defn- completed-activation-signals?
   "If the current plan is Pro or Starter, returns a Boolean indicating whether the instance should be considered to have
-  completed activation signals. Returns nil for non-Pro or Starter plans."
+  completed activation signals. Returns nil for non-Pro or Starter plans.
+  
+  **License Tier Distinction:**
+  This function determines the license tier (Pro vs Starter) by checking if the plan-alias starts with 'pro' or 'starter'.
+  The plan-alias comes from the token validation response, but can be overridden for testing via MB_DEV_LICENSE_TYPE env var.
+  
+  - Pro plans: require 4+ users OR 201+ queries for activation
+  - Starter plans: require 2+ users OR 101+ queries for activation"
   []
   (let [plan     (premium-features/plan-alias)
         pro?     (when plan (str/starts-with? plan "pro"))
